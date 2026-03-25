@@ -52,6 +52,13 @@ def bookings():
     bookings_data = load_bookings()
     return render_template('bookings.html', bookings=bookings_data)
 
+CURRENCY_RATES = {
+    'AUD': 1.0,
+    'USD': 0.67,
+    'EUR': 0.60,
+    'GBP': 0.52
+}
+
 def safe_float(value):
     try:
         if value is None or value == '':
@@ -60,26 +67,58 @@ def safe_float(value):
     except (ValueError, TypeError):
         return 0.0
 
+def get_live_rates(base='AUD'):
+    import requests
+    try:
+        resp = requests.get(f'https://api.exchangerate.host/latest?base={base}&symbols=USD,EUR,GBP,AUD', timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        if 'rates' in data:
+            return data['rates']
+    except Exception:
+        pass
+    return None
+
 @app.route('/api/budget/calculate', methods=['POST'])
 def calculate_budget():
     data = request.json or {}
-    # Simple budget calculation
+    currency = data.get('currency', 'AUD').upper()
+    if currency not in CURRENCY_RATES:
+        currency = 'AUD'
+
+    # Simple budget calculation in selected currency
     flights = safe_float(data.get('flights', 0))
     accommodation = safe_float(data.get('accommodation', 0))
     food = safe_float(data.get('food', 0))
     activities = safe_float(data.get('activities', 0))
     transport = safe_float(data.get('transport', 0))
     misc = safe_float(data.get('misc', 0))
-    
+
     subtotal = flights + accommodation + food + activities + transport + misc
-    # Assume 10% contingency
-    total = subtotal * 1.1
-    
+    contingency = subtotal * 0.1
+    total = subtotal + contingency
+
+    # Live rates fallback
+    rates = get_live_rates(base='AUD')
+    if rates and currency in rates:
+        rate = rates[currency]
+    else:
+        rate = CURRENCY_RATES.get(currency, 1.0)
+
+    total_aud = round(total / rate, 2)
+    subtotal_aud = round(subtotal / rate, 2)
+    contingency_aud = round(contingency / rate, 2)
+
     return jsonify({
         'subtotal': round(subtotal, 2),
-        'contingency': round(subtotal * 0.1, 2),
+        'contingency': round(contingency, 2),
         'total': round(total, 2),
-        'currency': 'AUD'
+        'currency': currency,
+        'rate': rate,
+        'subtotal_aud': subtotal_aud,
+        'contingency_aud': contingency_aud,
+        'total_aud': total_aud,
+        'live_rates': rates or CURRENCY_RATES
     })
 
 @app.route('/api/itinerary/update', methods=['POST'])
