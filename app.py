@@ -1,38 +1,160 @@
-from flask import Flask, render_template, request, jsonify, session
+﻿from flask import Flask, render_template, request, jsonify
 import json
 import os
 from datetime import datetime, timedelta
+from sqlalchemy import create_engine, Column, Integer, String, Float, Text, JSON
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 
 app = Flask(__name__)
-app.secret_key = 'your-secret-key-here'  # Change this in production
+app.secret_key = os.getenv('FLASK_SECRET_KEY', 'your-secret-key-here')
 
-# Data storage paths
-BOOKINGS_FILE = 'data/bookings.json'
-ITINERARY_FILE = 'data/itinerary.json'
+DATA_DIR = 'data'
+SQLITE_PATH = os.path.join(DATA_DIR, 'app.db')
+BOOKINGS_FILE = os.path.join(DATA_DIR, 'bookings.json')
+ITINERARY_FILE = os.path.join(DATA_DIR, 'itinerary.json')
 
-# Ensure data directories exist
-os.makedirs('data', exist_ok=True)
+os.makedirs(DATA_DIR, exist_ok=True)
+
+DATABASE_URL = os.getenv('RAILWAY_DATABASE_URL') or os.getenv('DATABASE_URL')
+if DATABASE_URL and DATABASE_URL.startswith('postgres://'):
+    DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
+if not DATABASE_URL:
+    DATABASE_URL = f'sqlite:///{SQLITE_PATH}'
+
+engine_kwargs = {}
+if DATABASE_URL.startswith('sqlite'):
+    engine_kwargs['connect_args'] = {'check_same_thread': False}
+
+engine = create_engine(DATABASE_URL, echo=False, future=True, **engine_kwargs)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+Base = declarative_base()
+
+class Booking(Base):
+    __tablename__ = 'bookings'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(String(255), nullable=False)
+    date = Column(String(50), nullable=True)
+    location = Column(String(255), nullable=True)
+    notes = Column(Text, default='')
+    cost = Column(Float, default=0.0)
+    currency = Column(String(10), default='AUD')
+
+class ItineraryDay(Base):
+    __tablename__ = 'itinerary_days'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    day = Column(Integer, nullable=False, unique=True)
+    date = Column(String(50), default='')
+    locations = Column(JSON, default=list)
+    activities = Column(JSON, default=list)
+    notes = Column(Text, default='')
+
+def get_db_session():
+    return SessionLocal()
+
+def init_db():
+    Base.metadata.create_all(bind=engine)
+
+def booking_to_dict(b):
+    return {
+        'id': b.id,
+        'title': b.title,
+        'date': b.date,
+        'location': b.location,
+        'notes': b.notes,
+        'cost': b.cost,
+        'currency': b.currency,
+    }
+
+def itinerary_day_to_dict(d):
+    return {
+        'id': d.id,
+        'day': d.day,
+        'date': d.date,
+        'locations': d.locations or [],
+        'activities': d.activities or [],
+        'notes': d.notes or '',
+    }
+
+# JSON fallback for local debugging (not persistent on Railway)
 
 def load_bookings():
-    if os.path.exists(BOOKINGS_FILE):
-        with open(BOOKINGS_FILE, 'r') as f:
-            return json.load(f)
-    return []
+    try:
+        with get_db_session() as db:
+            rows = db.query(Booking).order_by(Booking.id).all()
+            return [booking_to_dict(r) for r in rows]
+    except Exception:
+        if os.path.exists(BOOKINGS_FILE):
+            with open(BOOKINGS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return []
 
 def save_bookings(bookings):
-    with open(BOOKINGS_FILE, 'w') as f:
-        json.dump(bookings, f, indent=2)
+    try:
+        with get_db_session() as db:
+            db.query(Booking).delete()
+            db.commit()
+            for item in bookings:
+                b = Booking(
+                    title=item.get('title', 'Untitled'),
+                    date=item.get('date', ''),
+                    location=item.get('location', ''),
+                    notes=item.get('notes', ''),
+                    cost=float(item.get('cost', 0.0) or 0.0),
+                    currency=item.get('currency', 'AUD')
+                )
+                db.add(b)
+            db.commit()
+    except Exception:
+        with open(BOOKINGS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(bookings, f, indent=2)
 
 def load_itinerary():
-    if os.path.exists(ITINERARY_FILE):
-        with open(ITINERARY_FILE, 'r') as f:
-            return json.load(f)
-    # Default 21-day itinerary structure
-    return [{'day': i+1, 'date': '', 'locations': [], 'activities': [], 'notes': ''} for i in range(21)]
+    try:
+        with get_db_session() as db:
+            rows = db.query(ItineraryDay).order_by(ItineraryDay.day).all()
+            if rows:
+                return [itinerary_day_to_dict(r) for r in rows]
+            # seed 21 days if empty
+            itinerary = []
+            for i in range(21):
+                day = ItineraryDay(day=i+1, date='', locations=[], activities=[], notes='')
+                db.add(day)
+                itinerary.append(day)
+            db.commit()
+            return [itinerary_day_to_dict(d) for d in itinerary]
+    except Exception:
+        if os.path.exists(ITINERARY_FILE):
+            with open(ITINERARY_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return [{'day': i+1, 'date': '', 'locations': [], 'activities': [], 'notes': ''} for i in range(21)]
 
 def save_itinerary(itinerary):
-    with open(ITINERARY_FILE, 'w') as f:
-        json.dump(itinerary, f, indent=2)
+    try:
+        with get_db_session() as db:
+            for item in itinerary:
+                day_index = int(item.get('day', 0))
+                if day_index < 1:
+                    continue
+                existing = db.query(ItineraryDay).filter_by(day=day_index).first()
+                if existing:
+                    existing.date = item.get('date', '')
+                    existing.locations = item.get('locations', []) or []
+                    existing.activities = item.get('activities', []) or []
+                    existing.notes = item.get('notes', '')
+                else:
+                    new_day = ItineraryDay(
+                        day=day_index,
+                        date=item.get('date', ''),
+                        locations=item.get('locations', []) or [],
+                        activities=item.get('activities', []) or [],
+                        notes=item.get('notes', '')
+                    )
+                    db.add(new_day)
+            db.commit()
+    except Exception:
+        with open(ITINERARY_FILE, 'w', encoding='utf-8') as f:
+            json.dump(itinerary, f, indent=2)
 
 @app.route('/')
 def index():
@@ -86,7 +208,6 @@ def calculate_budget():
     if currency not in CURRENCY_RATES:
         currency = 'AUD'
 
-    # Simple budget calculation in selected currency
     flights = safe_float(data.get('flights', 0))
     accommodation = safe_float(data.get('accommodation', 0))
     food = safe_float(data.get('food', 0))
@@ -98,7 +219,6 @@ def calculate_budget():
     contingency = subtotal * 0.1
     total = subtotal + contingency
 
-    # Live rates fallback
     rates = get_live_rates(base='AUD')
     if rates and currency in rates:
         rate = rates[currency]
@@ -123,50 +243,81 @@ def calculate_budget():
 
 @app.route('/api/itinerary/update', methods=['POST'])
 def update_itinerary():
-    data = request.json
+    data = request.json or {}
+    if 'day' not in data:
+        return jsonify({'error': 'day is required'}), 400
+
+    day_index = int(data['day'])
     itinerary = load_itinerary()
-    
-    day_index = data['day'] - 1
-    if 0 <= day_index < len(itinerary):
-        itinerary[day_index] = data
+    if 1 <= day_index <= len(itinerary):
+        itinerary[day_index-1] = {
+            'id': itinerary[day_index-1].get('id'),
+            'day': day_index,
+            'date': data.get('date', ''),
+            'locations': data.get('locations', []),
+            'activities': data.get('activities', []),
+            'notes': data.get('notes', '')
+        }
         save_itinerary(itinerary)
         return jsonify({'success': True})
-    
+
     return jsonify({'error': 'Invalid day'}), 400
 
 @app.route('/api/bookings', methods=['GET', 'POST'])
 def handle_bookings():
     if request.method == 'GET':
         return jsonify(load_bookings())
-    
-    data = request.json
-    
+
+    data = request.json or {}
     bookings = load_bookings()
-    
-    if 'id' in data:
-        # Update existing
+
+    if 'id' in data and data.get('id') is not None:
+        updated = False
         for i, booking in enumerate(bookings):
-            if booking['id'] == data['id']:
-                bookings[i] = data
+            if booking['id'] == int(data['id']):
+                booking.update({
+                    'title': data.get('title', booking.get('title', 'Untitled')),
+                    'date': data.get('date', booking.get('date', '')),
+                    'location': data.get('location', booking.get('location', '')),
+                    'notes': data.get('notes', booking.get('notes', '')),
+                    'cost': float(data.get('cost', booking.get('cost', 0.0)) or 0.0),
+                    'currency': data.get('currency', booking.get('currency', 'AUD'))
+                })
+                updated = True
                 break
+        if not updated:
+            bookings.append({
+                'id': int(data.get('id')),
+                'title': data.get('title', 'Untitled'),
+                'date': data.get('date', ''),
+                'location': data.get('location', ''),
+                'notes': data.get('notes', ''),
+                'cost': float(data.get('cost', 0.0) or 0.0),
+                'currency': data.get('currency', 'AUD')
+            })
     else:
-        # Add new
-        data['id'] = len(bookings) + 1
-        bookings.append(data)
-    
+        next_id = max([b.get('id', 0) for b in bookings], default=0) + 1
+        new_booking = {
+            'id': next_id,
+            'title': data.get('title', 'Untitled'),
+            'date': data.get('date', ''),
+            'location': data.get('location', ''),
+            'notes': data.get('notes', ''),
+            'cost': float(data.get('cost', 0.0) or 0.0),
+            'currency': data.get('currency', 'AUD')
+        }
+        bookings.append(new_booking)
+
     save_bookings(bookings)
-    return jsonify({'success': True, 'booking': data})
+    return jsonify({'success': True, 'bookings': bookings})
 
 @app.route('/api/bookings/<int:booking_id>', methods=['DELETE'])
 def delete_booking(booking_id):
     bookings = load_bookings()
-    bookings = [b for b in bookings if b['id'] != booking_id]
+    bookings = [b for b in bookings if b.get('id') != booking_id]
     save_bookings(bookings)
     return jsonify({'success': True})
 
 if __name__ == '__main__':
-    app.run(
-        host='0.0.0.0',
-        port=int(os.environ.get('PORT', 5000)),
-        debug=False
-    )
+    init_db()
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)

@@ -1,0 +1,11 @@
+[
+  {
+    "description": "SYD-MEL",
+    "cost": 350,
+    "type": "flight",
+    "date": "2026-06-01",
+    "confirmation": "ABC123",
+    "notes": "Test booking",
+    "id": 1
+  }
+]
