@@ -22,6 +22,15 @@
             <form id="budget-form" class="space-y-6">
                 <div class="grid md:grid-cols-2 gap-6">
                     <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Currency</label>
+                        <select name="currency" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            <option value="AUD" selected>AUD (Australian Dollar)</option>
+                            <option value="USD">USD (US Dollar)</option>
+                            <option value="EUR">EUR (Euro)</option>
+                            <option value="GBP">GBP (British Pound)</option>
+                        </select>
+                    </div>
+                    <div>
                         <label class="block text-sm font-medium text-gray-700 mb-2">
                             <i class="fas fa-plane mr-2"></i>Flights
                         </label>
@@ -64,20 +73,24 @@
             </form>
             
             <div id="budget-results" class="mt-8 hidden">
-                <h3 class="text-xl font-semibold text-gray-800 mb-4">Budget Summary (AUD)</h3>
+                <h3 class="text-xl font-semibold text-gray-800 mb-4">Budget Summary</h3>
                 <div class="bg-gray-50 rounded-lg p-4 space-y-2">
                     <div class="flex justify-between">
-                        <span>Subtotal:</span>
+                        <span>Selected Currency Subtotal:</span>
                         <span id="subtotal" class="font-medium">$0.00</span>
                     </div>
                     <div class="flex justify-between">
                         <span>10% Contingency:</span>
                         <span id="contingency" class="font-medium">$0.00</span>
                     </div>
-                    <hr class="my-2">
-                    <div class="flex justify-between text-lg font-bold">
+                    <div class="flex justify-between">
                         <span>Total Estimated Cost:</span>
                         <span id="total" class="text-blue-600">$0.00</span>
+                    </div>
+                    <hr class="my-2">
+                    <div class="flex justify-between text-sm text-gray-600">
+                        <span>Converted to AUD:</span>
+                        <span id="total-aud" class="font-medium">AUD 0.00</span>
                     </div>
                 </div>
             </div>
@@ -98,9 +111,13 @@
                 });
                 const result = await response.json();
                 
-                document.getElementById('subtotal').textContent = `$${result.subtotal}`;
-                document.getElementById('contingency').textContent = `$${result.contingency}`;
-                document.getElementById('total').textContent = `$${result.total}`;
+                const currency = result.currency || 'AUD';
+                const symbol = currency === 'USD' ? '$' : currency === 'EUR' ? '€' : currency === 'GBP' ? '£' : 'A$';
+
+                document.getElementById('subtotal').textContent = `${symbol}${result.subtotal}`;
+                document.getElementById('contingency').textContent = `${symbol}${result.contingency}`;
+                document.getElementById('total').textContent = `${symbol}${result.total}`;
+                document.getElementById('total-aud').textContent = `AUD ${result.total_aud}`;
                 document.getElementById('budget-results').classList.remove('hidden');
             } catch (error) {
                 console.error('Error calculating budget:', error);
